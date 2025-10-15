@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube 채널 댓글 검색기</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Noto Sans KR', sans-serif;
+        }
+        .loader {
+            border-top-color: #3498db;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        mark {
+            background-color: #fde047; /* yellow-300 */
+            padding: 0 2px;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 min-h-screen p-4">
+
+    <div class="w-full max-w-4xl mx-auto bg-white rounded-2xl shadow-lg p-6 md:p-8">
+        <div class="text-center mb-8">
+            <h1 class="text-3xl md:text-4xl font-bold text-gray-900">YouTube 채널 댓글 검색기</h1>
+            <p class="text-gray-600 mt-2">특정 채널의 모든 영상에서 원하는 키워드가 포함된 댓글을 찾아보세요.</p>
+        </div>
+
+        <!-- Input Section -->
+        <div class="space-y-4 mb-8 max-w-2xl mx-auto">
+            <div>
+                <label for="apiKey" class="block text-sm font-medium text-gray-700 mb-1">YouTube API 키</label>
+                <input type="password" id="apiKey" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500" placeholder="API 키를 입력하세요">
+            </div>
+            <div>
+                <label for="channelUrl" class="block text-sm font-medium text-gray-700 mb-1">YouTube 채널 URL</or>
+                <input type="text" id="channelUrl" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500" placeholder="분석할 채널의 URL을 입력하세요">
+            </div>
+            <div>
+                <label for="keyword" class="block text-sm font-medium text-gray-700 mb-1">검색할 키워드</label>
+                <input type="text" id="keyword" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500" placeholder="댓글에서 찾을 단어를 입력하세요">
+            </div>
+            <button id="searchBtn" class="w-full bg-blue-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-700 transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                검색 시작
+            </button>
+        </div>
+
+        <!-- Status & Results Section -->
+        <div id="statusContainer" class="text-center my-4 p-4 bg-gray-50 rounded-lg min-h-[50px]">
+            <div id="loader" class="loader ease-linear rounded-full border-4 border-t-4 border-gray-200 h-8 w-8 mx-auto hidden"></div>
+            <p id="statusText" class="text-gray-600 font-medium mt-2"></p>
+            <p id="errorText" class="text-red-500 font-medium mt-2"></p>
+        </div>
+        
+        <div id="resultsContainer" class="space-y-6">
+            <!-- Search results will be injected here -->
+        </div>
+    </div>
+
+    <script>
+        // DOM Elements
+        const apiKeyInput = document.getElementById('apiKey');
+        const channelUrlInput = document.getElementById('channelUrl');
+        const keywordInput = document.getElementById('keyword');
+        const searchBtn = document.getElementById('searchBtn');
+        const loader = document.getElementById('loader');
+        const statusText = document.getElementById('statusText');
+        const errorText = document.getElementById('errorText');
+        const resultsContainer = document.getElementById('resultsContainer');
+
+        // Load and save API key
+        apiKeyInput.value = localStorage.getItem('youtubeApiKey') || '';
+        apiKeyInput.addEventListener('change', () => localStorage.setItem('youtubeApiKey', apiKeyInput.value));
+
+        searchBtn.addEventListener('click', handleSearch);
+
+        function resetUI() {
+            resultsContainer.innerHTML = '';
+            errorText.textContent = '';
+            statusText.textContent = '검색을 준비 중입니다...';
+            loader.classList.remove('hidden');
+            searchBtn.disabled = true;
+            searchBtn.classList.add('opacity-50', 'cursor-not-allowed');
+        }
+
+        function restoreUI() {
+            loader.classList.add('hidden');
+            searchBtn.disabled = false;
+            searchBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+        }
+        
+        async function handleSearch() {
+            resetUI();
+            const apiKey = apiKeyInput.value.trim();
+            const channelUrl = channelUrlInput.value.trim();
+            const keyword = keywordInput.value.trim();
+
+            if (!apiKey || !channelUrl || !keyword) {
+                errorText.textContent = "API 키, 채널 URL, 키워드를 모두 입력해주세요.";
+                statusText.textContent = '';
+                restoreUI();
+                return;
+            }
+
+            try {
+                statusText.textContent = '채널 ID를 확인하는 중...';
+                const channelId = await getChannelId(channelUrl, apiKey);
+
+                statusText.textContent = '채널의 모든 영상 목록을 가져오는 중... (영상이 많으면 시간이 걸릴 수 있습니다)';
+                const videoIds = await getAllVideoIds(channelId, apiKey);
+                
+                statusText.textContent = `총 ${videoIds.length}개의 영상에서 댓글을 검색합니다.`;
+                let totalMatches = 0;
+
+                for (let i = 0; i < videoIds.length; i++) {
+                    const videoId = videoIds[i];
+                    statusText.textContent = `(${i + 1}/${videoIds.length}) 영상 댓글 스캔 중...`;
+                    
+                    const response = await searchCommentsInVideo(videoId, keyword, apiKey);
+
+                    if (response.matchingComments.length > 0) {
+                        totalMatches += response.matchingComments.length;
+                        displayResult(response.videoDetails, response.matchingComments, keyword, videoId); // videoId 전달
+                    }
+                }
+                
+                statusText.textContent = `검색 완료! 총 ${totalMatches}개의 일치하는 댓글을 찾았습니다.`;
+
+            } catch (error) {
+                console.error("Search Error:", error);
+                errorText.textContent = `오류: ${error.message}`;
+                statusText.textContent = '오류가 발생하여 검색을 중단했습니다.';
+            } finally {
+                restoreUI();
+            }
+        }
+        
+        async function getChannelId(url, apiKey) {
+            // Extracts channel ID from various URL formats
+            const patterns = [
+                /youtube\.com\/channel\/([\w-]+)/,
+                /youtube\.com\/c\/([\w-]+)/,
+                /youtube\.com\/user\/([\w-]+)/,
+                /youtube\.com\/@([\w-]+)/,
+            ];
+            let handle;
+            for (const pattern of patterns) {
+                const match = url.match(pattern);
+                if (match && match[1]) {
+                    handle = match[1];
+                    break;
+                }
+            }
+            if (!handle) throw new Error("유효한 채널 URL 형식이 아닙니다.");
+
+            // Search for the channel by its handle to get the ID
+            const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${handle}&type=channel&key=${apiKey}`;
+            const response = await fetch(searchUrl);
+            const data = await response.json();
+            if (data.error) throw new Error(`채널 ID 조회 실패: ${data.error.message}`);
+            if (!data.items || data.items.length === 0) throw new Error(`'${handle}' 채널을 찾을 수 없습니다. URL을 확인해주세요.`);
+            return data.items[0].snippet.channelId;
+        }
+
+        async function getAllVideoIds(channelId, apiKey) {
+            const videoIds = [];
+            let nextPageToken = '';
+            
+            // First get the uploads playlist ID from the channel
+            const channelUrl = `https://www.googleapis.com/youtube/v3/channels?part=contentDetails&id=${channelId}&key=${apiKey}`;
+            const channelResponse = await fetch(channelUrl);
+            const channelData = await channelResponse.json();
+            if (channelData.error || !channelData.items || channelData.items.length === 0) {
+                 throw new Error("채널 정보를 가져올 수 없습니다.");
+            }
+            const uploadsPlaylistId = channelData.items[0].contentDetails.relatedPlaylists.uploads;
+
+            // Then get all videos from the uploads playlist
+            do {
+                const playlistUrl = `https://www.googleapis.com/youtube/v3/playlistItems?part=contentDetails&playlistId=${uploadsPlaylistId}&maxResults=50&pageToken=${nextPageToken}&key=${apiKey}`;
+                const response = await fetch(playlistUrl);
+                const data = await response.json();
+                if (data.error) throw new Error(`영상 목록 조회 실패: ${data.error.message}`);
+                
+                data.items.forEach(item => videoIds.push(item.contentDetails.videoId));
+                nextPageToken = data.nextPageToken;
+            } while (nextPageToken);
+            
+            return videoIds;
+        }
+
+        async function searchCommentsInVideo(videoId, keyword, apiKey) {
+            const matchingComments = [];
+            let nextPageToken = '';
+            
+            // Get video details first
+             const videoUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${videoId}&key=${apiKey}`;
+            const videoResponse = await fetch(videoUrl);
+            const videoData = await videoResponse.json();
+             if (videoData.error || videoData.items.length === 0) return { videoDetails: null, matchingComments: [] }; // Skip if video is unavailable
+             const videoDetails = videoData.items[0].snippet;
+
+            try {
+                do {
+                    const commentsUrl = `https://www.googleapis.com/youtube/v3/commentThreads?part=snippet&videoId=${videoId}&maxResults=100&pageToken=${nextPageToken}&key=${apiKey}`;
+                    const response = await fetch(commentsUrl);
+                    const data = await response.json();
+                    
+                    if (data.error) {
+                        // If comments are disabled, just stop for this video
+                        if (data.error.errors[0].reason === 'commentsDisabled') break;
+                        throw new Error(`댓글 조회 실패 (영상 ID: ${videoId}): ${data.error.message}`);
+                    }
+                    
+                    data.items.forEach(item => {
+                        const comment = item.snippet.topLevelComment.snippet;
+                        if (comment.textOriginal.toLowerCase().includes(keyword.toLowerCase())) {
+                            matchingComments.push(comment);
+                        }
+                    });
+                    
+                    nextPageToken = data.nextPageToken;
+                } while (nextPageToken);
+            } catch (e) {
+                console.warn(e.message); // Log warning but continue with other videos
+            }
+            
+            return { videoDetails, matchingComments };
+        }
+
+        // videoId를 추가로 받도록 함수 시그니처 변경
+        function displayResult(videoDetails, comments, keyword, videoId) {
+            const resultEl = document.createElement('div');
+            resultEl.className = 'p-4 bg-gray-50 rounded-lg shadow';
+
+            // href를 videoDetails.channelId 대신 videoId로 변경
+            const videoInfoHtml = `
+                <a href="https://www.youtube.com/watch?v=${videoId}" target="_blank" class="flex items-center space-x-4 mb-4 hover:opacity-80 transition-opacity">
+                    <img src="${videoDetails.thumbnails.medium.url}" alt="${videoDetails.title}" class="w-24 h-16 object-cover rounded">
+                    <h3 class="font-bold text-lg">${videoDetails.title}</h3>
+                </a>
+            `;
+
+            let commentsHtml = '<div class="space-y-3 border-t pt-3">';
+            comments.forEach(comment => {
+                const highlightedText = comment.textDisplay.replace(new RegExp(keyword, 'gi'), `<mark>${keyword}</mark>`);
+                commentsHtml += `
+                    <div class="flex items-start space-x-2 text-sm">
+                        <img src="${comment.authorProfileImageUrl}" alt="" class="w-6 h-6 rounded-full">
+                        <div>
+                            <p class="font-semibold">${comment.authorDisplayName}</p>
+                            <p class="text-gray-600">${highlightedText.replace(/<br>/g, '\n')}</p>
+                        </div>
+                    </div>
+                `;
+            });
+            commentsHtml += '</div>';
+
+            resultEl.innerHTML = videoInfoHtml + commentsHtml;
+            resultsContainer.appendChild(resultEl);
+        }
+    </script>
+</body>
+</html>
+
